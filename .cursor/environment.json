@@ -1,0 +1,14 @@
+{
+  "name": "tournament-director",
+  "install": "npm install",
+  "terminals": [
+    {
+      "name": "server",
+      "command": "npm run dev -w server"
+    },
+    {
+      "name": "client",
+      "command": "npm run dev -w client"
+    }
+  ]
+}
