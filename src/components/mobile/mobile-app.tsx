@@ -10,6 +10,7 @@ import { isBreak } from "@/lib/tournament/blinds";
 import { formatChips, formatClock } from "@/lib/tournament/helpers";
 import { useLiveRemaining } from "@/hooks/use-live-remaining";
 import { apiMutate, useTournamentStream } from "@/hooks/use-tournament";
+import { FloorMovesAlert } from "@/components/floor/floor-moves-alert";
 import type { Player, TimerAction, TournamentPublic } from "@/lib/tournament/types";
 
 export function MobileApp() {
@@ -149,6 +150,10 @@ export function MobileApp() {
           </AlertDescription>
         </Alert>
       ) : null}
+
+      <div className="mb-4">
+        <FloorMovesAlert tournament={tournament} compact />
+      </div>
 
       <section className="rounded-xl border border-border bg-card p-4">
         <label className="text-sm font-medium" htmlFor="pin">

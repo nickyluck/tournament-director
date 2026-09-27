@@ -56,6 +56,12 @@ export function DirectorHeader({
               {lan?.lanUrls[0] ?? lan?.localUrl ?? "…"}
             </p>
             <div className="mt-2 flex flex-wrap gap-3 sm:justify-end">
+              <Link className="underline underline-offset-4" href="/setup">
+                Configuration
+              </Link>
+              <Link className="underline underline-offset-4" href="/players">
+                Joueurs
+              </Link>
               <Link className="underline underline-offset-4" href="/clock">
                 Horloge salle
               </Link>
