@@ -1,11 +1,16 @@
 export type PlayerStatus = "active" | "eliminated";
 
+export type BlindStepKind = "level" | "break";
+
 export type BlindLevel = {
   id: string;
+  kind: BlindStepKind;
   durationMinutes: number;
   smallBlind: number;
   bigBlind: number;
   ante: number;
+  /** Message affiché pendant une pause (ex. changement de jetons). */
+  message: string | null;
 };
 
 export type Player = {
@@ -36,7 +41,7 @@ export type SeatingMove = {
   toTable: number;
   toSeat: number;
   at: string;
-  reason: "initial" | "rebalance" | "break";
+  reason: "initial" | "rebalance" | "break" | "manual";
 };
 
 export type TimerState = {
@@ -55,8 +60,15 @@ export type Tournament = {
   status: TournamentStatus;
   startingStack: number;
   seatsPerTable: number;
+  /** Places à la table finale (peut différer de seatsPerTable). */
+  finalTableSeats: number;
   /** Desired number of tables configured before start. */
   configuredTableCount: number;
+  /**
+   * Ordre de priorité de cassage (IDs de tables), du plus prioritaire au moins.
+   * Les tables absentes utilisent le fallback automatique.
+   */
+  breakOrder: string[];
   mobilePin: string;
   entrants: number;
   players: Player[];
@@ -76,3 +88,23 @@ export type TournamentPublic = Tournament & {
 };
 
 export type TimerAction = "play" | "pause" | "plus1" | "next" | "prev";
+
+/** Structure de blindes enregistrée (réutilisable entre tournois). */
+export type SavedStructure = {
+  id: string;
+  name: string;
+  blinds: BlindLevel[];
+  updatedAt: string;
+};
+
+/** Joueur dans l’annuaire (hors inscription au tournoi courant). */
+export type RosterPlayer = {
+  id: string;
+  name: string;
+  createdAt: string;
+};
+
+export type Library = {
+  structures: SavedStructure[];
+  players: RosterPlayer[];
+};

@@ -62,6 +62,9 @@ export function DirectorHeader({
               <Link className="underline underline-offset-4" href="/mobile">
                 Mobile floor
               </Link>
+              <Link className="underline underline-offset-4" href="/standings">
+                Classement
+              </Link>
             </div>
           </div>
         </div>

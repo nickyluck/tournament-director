@@ -6,6 +6,7 @@ const reasonLabel = {
   initial: "Départ",
   rebalance: "Rééquilibrage",
   break: "Casse",
+  manual: "Manuel",
 } as const;
 
 export function MovesPanel({ tournament }: { tournament: TournamentPublic }) {
@@ -15,7 +16,7 @@ export function MovesPanel({ tournament }: { tournament: TournamentPublic }) {
     <section className="rounded-xl border border-border bg-card p-4">
       <h2 className="text-lg font-semibold">Moves floor</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        Historique des déplacements appliqués automatiquement.
+        Historique des déplacements (auto et manuels).
       </p>
 
       {moves.length === 0 ? (

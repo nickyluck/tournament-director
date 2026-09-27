@@ -1,7 +1,14 @@
 import { promises as fs } from "fs";
 import path from "path";
+import { normalizeBlindLevels } from "./blinds";
 import { generatePin, sampleBlindStructure, createId } from "./helpers";
-import { rebalanceAndBreak, seatInitial } from "./seating";
+import { ensureRosterPlayer } from "./library";
+import {
+  defaultBreakOrder,
+  rebalanceAndBreak,
+  seatInitial,
+  syncBreakOrder,
+} from "./seating";
 import type {
   BlindLevel,
   TimerAction,
@@ -28,21 +35,24 @@ function listeners(): Set<Listener> {
 }
 
 function defaultTournament(): Tournament {
+  const blinds = sampleBlindStructure();
   return {
     name: "Tournoi du soir",
     status: "setup",
     startingStack: 20_000,
     seatsPerTable: 9,
+    finalTableSeats: 9,
     configuredTableCount: 2,
+    breakOrder: [],
     mobilePin: generatePin(),
     entrants: 0,
     players: [],
     tables: [],
-    blinds: sampleBlindStructure(),
+    blinds,
     timer: {
       running: false,
       levelIndex: 0,
-      remainingMs: sampleBlindStructure()[0].durationMinutes * 60_000,
+      remainingMs: blinds[0].durationMinutes * 60_000,
       anchorAt: null,
     },
     moves: [],
@@ -89,12 +99,33 @@ async function writeAtomic(tournament: Tournament): Promise<void> {
   await fs.rename(tmp, DATA_FILE);
 }
 
+function blindSnapshot(b: BlindLevel) {
+  return JSON.stringify({
+    id: b.id,
+    kind: b.kind,
+    durationMinutes: b.durationMinutes,
+    smallBlind: b.smallBlind,
+    bigBlind: b.bigBlind,
+    ante: b.ante,
+    message: b.message,
+  });
+}
+
 function normalizeTournament(parsed: Tournament): Tournament {
   parsed.players = parsed.players.map((p) => ({
     ...p,
     killerId: p.killerId ?? null,
     killerName: p.killerName ?? null,
   }));
+  parsed.blinds = normalizeBlindLevels(parsed.blinds ?? []);
+  if (parsed.finalTableSeats == null || parsed.finalTableSeats < 2) {
+    parsed.finalTableSeats = parsed.seatsPerTable;
+  }
+  if (!Array.isArray(parsed.breakOrder)) {
+    parsed.breakOrder = defaultBreakOrder(parsed.tables ?? []);
+  } else {
+    parsed.breakOrder = syncBreakOrder(parsed.breakOrder, parsed.tables ?? []);
+  }
   return parsed;
 }
 
@@ -116,7 +147,7 @@ async function readFromDisk(): Promise<Tournament> {
 
 export async function getTournament(): Promise<Tournament> {
   if (globalForTournament.__tdCache) {
-    return structuredClone(globalForTournament.__tdCache);
+    return structuredClone(normalizeTournament(globalForTournament.__tdCache));
   }
   const t = await readFromDisk();
   globalForTournament.__tdCache = t;
@@ -162,61 +193,179 @@ export async function resetTournament(): Promise<TournamentPublic> {
   return persistAndNotify(defaultTournament());
 }
 
+function clearSeating(t: Tournament): void {
+  t.tables = [];
+  t.moves = [];
+  t.breakOrder = [];
+  for (const p of t.players) {
+    p.tableId = null;
+    p.seat = null;
+  }
+}
+
+function allActivesSeated(t: Tournament): boolean {
+  const actives = t.players.filter((p) => p.status === "active");
+  return (
+    actives.length >= 2 &&
+    t.tables.some((table) => table.open) &&
+    actives.every((p) => p.tableId != null && p.seat != null)
+  );
+}
+
+function applyRebalance(t: Tournament): void {
+  const result = rebalanceAndBreak(t.players, t.tables, t.seatsPerTable, {
+    finalTableSeats: t.finalTableSeats,
+    breakOrder: t.breakOrder,
+  });
+  t.players = result.players;
+  t.tables = result.tables;
+  t.breakOrder = result.breakOrder;
+  if (result.moves.length > 0) {
+    t.moves = [...result.moves, ...t.moves].slice(0, 200);
+  }
+}
+
+function applyBlindsUpdate(t: Tournament, incomingRaw: BlindLevel[]): void {
+  const incoming = normalizeBlindLevels(incomingRaw);
+  if (incoming.length === 0) throw new Error("Au moins une étape dans la structure.");
+  if (!incoming.some((b) => b.kind === "level")) {
+    throw new Error("Au moins un niveau de blindes (hors pause) est requis.");
+  }
+
+  if (t.status === "setup") {
+    t.blinds = incoming;
+    t.timer.remainingMs = t.blinds[0].durationMinutes * 60_000;
+    t.timer.levelIndex = 0;
+    t.timer.running = false;
+    t.timer.anchorAt = null;
+    return;
+  }
+
+  if (t.status !== "running") {
+    throw new Error("Structure verrouillée.");
+  }
+
+  const levelIndex = t.timer.levelIndex;
+  const locked = t.blinds.slice(0, levelIndex);
+  if (incoming.length < locked.length) {
+    throw new Error("Impossible de supprimer des niveaux déjà joués.");
+  }
+  for (let i = 0; i < locked.length; i += 1) {
+    if (blindSnapshot(incoming[i]) !== blindSnapshot(locked[i])) {
+      throw new Error("Les niveaux déjà joués ne peuvent pas être modifiés.");
+    }
+  }
+
+  const oldCurrent = t.blinds[levelIndex] ?? null;
+  const now = Date.now();
+  syncTimerClock(t, now);
+
+  t.blinds = incoming;
+
+  let newIndex = oldCurrent
+    ? incoming.findIndex((b) => b.id === oldCurrent.id)
+    : levelIndex;
+  if (newIndex < levelIndex) newIndex = levelIndex;
+  if (newIndex < 0 || newIndex >= incoming.length) {
+    newIndex = Math.min(levelIndex, incoming.length - 1);
+  }
+  t.timer.levelIndex = newIndex;
+
+  const newCurrent = incoming[newIndex];
+  if (
+    oldCurrent &&
+    newCurrent &&
+    oldCurrent.id === newCurrent.id &&
+    oldCurrent.durationMinutes !== newCurrent.durationMinutes
+  ) {
+    t.timer.remainingMs = newCurrent.durationMinutes * 60_000;
+    t.timer.anchorAt = t.timer.running ? now : null;
+  }
+}
+
 export async function updateSetup(input: {
   name?: string;
   startingStack?: number;
   seatsPerTable?: number;
+  finalTableSeats?: number;
   configuredTableCount?: number;
+  breakOrder?: string[];
   blinds?: BlindLevel[];
 }): Promise<TournamentPublic> {
   const t = await getTournament();
-  if (t.status !== "setup") {
-    throw new Error("Le tournoi a déjà démarré — configuration verrouillée.");
+  if (t.status === "finished") {
+    throw new Error("Le tournoi est terminé — configuration verrouillée.");
   }
+
+  const isSetup = t.status === "setup";
+  const isRunning = t.status === "running";
+
   if (input.name != null) t.name = input.name.trim() || t.name;
   if (input.startingStack != null) {
     if (input.startingStack <= 0) throw new Error("Stack de départ invalide.");
     t.startingStack = Math.floor(input.startingStack);
   }
+
+  let seatingDirty = false;
+
   if (input.seatsPerTable != null) {
+    if (!isSetup) throw new Error("Places par table modifiables uniquement en préparation.");
     if (input.seatsPerTable < 2 || input.seatsPerTable > 10) {
       throw new Error("Places par table : entre 2 et 10.");
     }
-    t.seatsPerTable = Math.floor(input.seatsPerTable);
+    const next = Math.floor(input.seatsPerTable);
+    if (next !== t.seatsPerTable) seatingDirty = true;
+    t.seatsPerTable = next;
+    if (t.finalTableSeats > next * 2) {
+      // keep final table seats as-is unless absurd; no auto-clamp beyond range
+    }
   }
+
+  if (input.finalTableSeats != null) {
+    if (!isSetup) throw new Error("Taille de table finale modifiable uniquement en préparation.");
+    if (input.finalTableSeats < 2 || input.finalTableSeats > 10) {
+      throw new Error("Places table finale : entre 2 et 10.");
+    }
+    const next = Math.floor(input.finalTableSeats);
+    if (next !== t.finalTableSeats) seatingDirty = true;
+    t.finalTableSeats = next;
+  }
+
   if (input.configuredTableCount != null) {
+    if (!isSetup) throw new Error("Nombre de tables modifiable uniquement en préparation.");
     if (input.configuredTableCount < 1 || input.configuredTableCount > 50) {
       throw new Error("Nombre de tables invalide.");
     }
-    t.configuredTableCount = Math.floor(input.configuredTableCount);
+    const next = Math.floor(input.configuredTableCount);
+    if (next !== t.configuredTableCount) seatingDirty = true;
+    t.configuredTableCount = next;
   }
+
+  if (input.breakOrder != null) {
+    if (!isSetup && !isRunning) {
+      throw new Error("Ordre de cassage non modifiable.");
+    }
+    const openIds = new Set(t.tables.filter((table) => table.open).map((table) => table.id));
+    const cleaned = input.breakOrder.filter((id) => openIds.has(id));
+    t.breakOrder = syncBreakOrder(cleaned, t.tables);
+  }
+
   if (input.blinds != null) {
-    if (input.blinds.length === 0) throw new Error("Au moins un niveau de blindes.");
-    t.blinds = input.blinds.map((b) => ({
-      ...b,
-      id: b.id || createId("blind"),
-      durationMinutes: Math.max(1, Math.floor(b.durationMinutes)),
-      smallBlind: Math.max(0, Math.floor(b.smallBlind)),
-      bigBlind: Math.max(0, Math.floor(b.bigBlind)),
-      ante: Math.max(0, Math.floor(b.ante)),
-    }));
-    t.timer.remainingMs = t.blinds[0].durationMinutes * 60_000;
-    t.timer.levelIndex = 0;
-    t.timer.running = false;
-    t.timer.anchorAt = null;
+    if (!isSetup && !isRunning) {
+      throw new Error("Structure verrouillée.");
+    }
+    applyBlindsUpdate(t, input.blinds);
   }
+
+  if (seatingDirty) clearSeating(t);
   return persistAndNotify(t);
 }
 
-export async function addPlayer(name: string): Promise<TournamentPublic> {
-  const t = await getTournament();
-  if (t.status !== "setup") {
-    throw new Error("Impossible d'ajouter un joueur après le départ.");
-  }
+function pushPlayer(t: Tournament, name: string): void {
   const trimmed = name.trim();
   if (!trimmed) throw new Error("Le nom du joueur est requis.");
   if (t.players.some((p) => p.name.toLowerCase() === trimmed.toLowerCase())) {
-    throw new Error("Ce joueur est déjà inscrit.");
+    throw new Error(`Ce joueur est déjà inscrit : ${trimmed}`);
   }
   t.players.push({
     id: createId("player"),
@@ -228,6 +377,47 @@ export async function addPlayer(name: string): Promise<TournamentPublic> {
     killerId: null,
     killerName: null,
   });
+}
+
+export async function addPlayer(
+  name: string,
+  options?: { saveToRoster?: boolean },
+): Promise<TournamentPublic> {
+  const t = await getTournament();
+  if (t.status !== "setup") {
+    throw new Error("Impossible d'ajouter un joueur après le départ.");
+  }
+  pushPlayer(t, name);
+  clearSeating(t);
+  if (options?.saveToRoster !== false) {
+    await ensureRosterPlayer(name);
+  }
+  return persistAndNotify(t);
+}
+
+export async function enrollPlayers(
+  names: string[],
+  options?: { saveToRoster?: boolean },
+): Promise<TournamentPublic> {
+  const t = await getTournament();
+  if (t.status !== "setup") {
+    throw new Error("Impossible d'ajouter un joueur après le départ.");
+  }
+  const unique = [...new Set(names.map((n) => n.trim()).filter(Boolean))];
+  if (unique.length === 0) throw new Error("Aucun joueur à inscrire.");
+
+  let added = 0;
+  for (const name of unique) {
+    if (t.players.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
+      continue;
+    }
+    pushPlayer(t, name);
+    added += 1;
+    if (options?.saveToRoster !== false) {
+      await ensureRosterPlayer(name);
+    }
+  }
+  if (added > 0) clearSeating(t);
   return persistAndNotify(t);
 }
 
@@ -239,6 +429,31 @@ export async function removePlayer(playerId: string): Promise<TournamentPublic> 
   const before = t.players.length;
   t.players = t.players.filter((p) => p.id !== playerId);
   if (t.players.length === before) throw new Error("Joueur introuvable.");
+  clearSeating(t);
+  return persistAndNotify(t);
+}
+
+/** Place les joueurs aux tables pendant la phase setup (avant le chrono). */
+export async function seatPlayers(): Promise<TournamentPublic> {
+  const t = await getTournament();
+  if (t.status !== "setup") {
+    throw new Error("Le placement n’est disponible qu’avant le départ.");
+  }
+  const actives = t.players.filter((p) => p.status === "active");
+  if (actives.length < 2) {
+    throw new Error("Il faut au moins 2 joueurs pour placer.");
+  }
+
+  const seated = seatInitial(
+    t.players,
+    t.configuredTableCount,
+    t.seatsPerTable,
+    t.finalTableSeats,
+  );
+  t.players = seated.players;
+  t.tables = seated.tables;
+  t.moves = seated.moves;
+  t.breakOrder = seated.breakOrder;
   return persistAndNotify(t);
 }
 
@@ -250,11 +465,13 @@ export async function startTournament(): Promise<TournamentPublic> {
     throw new Error("Il faut au moins 2 joueurs pour démarrer.");
   }
   if (t.blinds.length === 0) throw new Error("Structure de blindes manquante.");
+  if (!t.blinds.some((b) => b.kind === "level")) {
+    throw new Error("La structure doit contenir au moins un niveau de blindes.");
+  }
+  if (!allActivesSeated(t)) {
+    throw new Error("Placez d’abord les joueurs aux tables avant de démarrer.");
+  }
 
-  const seated = seatInitial(t.players, t.configuredTableCount, t.seatsPerTable);
-  t.players = seated.players;
-  t.tables = seated.tables;
-  t.moves = seated.moves;
   t.entrants = actives.length;
   t.status = "running";
   t.mobilePin = generatePin();
@@ -264,6 +481,88 @@ export async function startTournament(): Promise<TournamentPublic> {
     remainingMs: t.blinds[0].durationMinutes * 60_000,
     anchorAt: Date.now(),
   };
+  t.breakOrder = syncBreakOrder(t.breakOrder, t.tables);
+  return persistAndNotify(t);
+}
+
+export async function movePlayer(
+  playerId: string,
+  toTableId: string,
+  toSeat: number,
+): Promise<TournamentPublic> {
+  const t = await getTournament();
+  if (t.status === "finished") {
+    throw new Error("Tournoi terminé — déplacements impossibles.");
+  }
+  if (t.tables.length === 0) {
+    throw new Error("Aucun placement en cours.");
+  }
+
+  const player = t.players.find((p) => p.id === playerId);
+  if (!player || player.status !== "active") {
+    throw new Error("Joueur introuvable ou déjà éliminé.");
+  }
+
+  const toTable = t.tables.find((table) => table.id === toTableId);
+  if (!toTable || !toTable.open) {
+    throw new Error("Table cible invalide.");
+  }
+  const seat = Math.floor(toSeat);
+  if (seat < 1 || seat > toTable.seats) {
+    throw new Error(`Siège invalide (1–${toTable.seats}).`);
+  }
+
+  if (player.tableId === toTableId && player.seat === seat) {
+    return enrich(t);
+  }
+
+  const fromTable = t.tables.find((table) => table.id === player.tableId) ?? null;
+  const fromTableNumber = fromTable?.number ?? null;
+  const occupant = t.players.find(
+    (p) =>
+      p.status === "active" &&
+      p.id !== playerId &&
+      p.tableId === toTableId &&
+      p.seat === seat,
+  );
+
+  const now = new Date().toISOString();
+  const moves = [];
+
+  if (occupant) {
+    const occFrom = occupant.tableId === player.tableId ? fromTableNumber : toTable.number;
+    occupant.tableId = player.tableId;
+    occupant.seat = player.seat;
+    if (occupant.tableId && occupant.seat != null) {
+      const destTable = t.tables.find((table) => table.id === occupant.tableId);
+      moves.push({
+        id: createId("move"),
+        playerId: occupant.id,
+        playerName: occupant.name,
+        fromTable: toTable.number,
+        toTable: destTable?.number ?? fromTableNumber ?? 0,
+        toSeat: occupant.seat,
+        at: now,
+        reason: "manual" as const,
+      });
+      void occFrom;
+    }
+  }
+
+  player.tableId = toTableId;
+  player.seat = seat;
+  moves.push({
+    id: createId("move"),
+    playerId: player.id,
+    playerName: player.name,
+    fromTable: fromTableNumber,
+    toTable: toTable.number,
+    toSeat: seat,
+    at: now,
+    reason: "manual" as const,
+  });
+
+  t.moves = [...moves, ...t.moves].slice(0, 200);
   return persistAndNotify(t);
 }
 
@@ -328,7 +627,6 @@ export async function controlTimer(
   return persistAndNotify(t);
 }
 
-/** Advance level automatically when timer hits 0 while running. */
 export async function tickTimerIfNeeded(): Promise<TournamentPublic> {
   const t = await getTournament();
   if (t.status !== "running" || !t.timer.running) {
@@ -367,7 +665,6 @@ export async function eliminatePlayer(
     }
   }
 
-  // Normalize legacy records missing killer fields.
   for (const p of t.players) {
     if (p.killerId === undefined) p.killerId = null;
     if (p.killerName === undefined) p.killerName = null;
@@ -404,23 +701,15 @@ export async function eliminatePlayer(
     const winner = t.players.find((p) => p.status === "active");
     if (winner) {
       winner.place = 1;
-      // keep winner seated until finished display
     }
     t.status = "finished";
     t.timer.running = false;
     t.timer.anchorAt = null;
-    // Close all but one table optionally
-    const result = rebalanceAndBreak(t.players, t.tables, t.seatsPerTable);
-    t.players = result.players;
-    t.tables = result.tables;
-    t.moves = [...result.moves, ...t.moves].slice(0, 200);
+    applyRebalance(t);
     return persistAndNotify(t);
   }
 
-  const result = rebalanceAndBreak(t.players, t.tables, t.seatsPerTable);
-  t.players = result.players;
-  t.tables = result.tables;
-  t.moves = [...result.moves, ...t.moves].slice(0, 200);
+  applyRebalance(t);
   return persistAndNotify(t);
 }
 
@@ -429,12 +718,7 @@ export async function forceRebalance(): Promise<TournamentPublic> {
   if (t.status !== "running") {
     throw new Error("Rééquilibrage disponible uniquement en cours de tournoi.");
   }
-  const result = rebalanceAndBreak(t.players, t.tables, t.seatsPerTable);
-  t.players = result.players;
-  t.tables = result.tables;
-  if (result.moves.length > 0) {
-    t.moves = [...result.moves, ...t.moves].slice(0, 200);
-  }
+  applyRebalance(t);
   return persistAndNotify(t);
 }
 

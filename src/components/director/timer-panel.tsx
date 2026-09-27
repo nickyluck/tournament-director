@@ -2,6 +2,7 @@
 
 import { useTransition } from "react";
 import { Button } from "@/components/ui/button";
+import { isBreak } from "@/lib/tournament/blinds";
 import { formatClock, formatChips } from "@/lib/tournament/helpers";
 import { apiMutate } from "@/hooks/use-tournament";
 import type { TimerAction, TournamentPublic } from "@/lib/tournament/types";
@@ -38,9 +39,11 @@ export function TimerPanel({
         </p>
         <p className="text-sm text-muted-foreground">
           {level
-            ? `Niveau ${tournament.timer.levelIndex + 1} · ${formatChips(level.smallBlind)}/${formatChips(level.bigBlind)}${level.ante ? ` ante ${formatChips(level.ante)}` : ""} · ${level.durationMinutes} min`
+            ? isBreak(level)
+              ? `Pause · ${level.durationMinutes} min${level.message ? ` · ${level.message}` : ""}`
+              : `Niveau ${tournament.timer.levelIndex + 1} · ${formatChips(level.smallBlind)}/${formatChips(level.bigBlind)}${level.ante ? ` ante ${formatChips(level.ante)}` : ""} · ${level.durationMinutes} min`
             : "Aucun niveau"}
-          {tournament.timer.running ? " · en lecture" : " · en pause"}
+          {tournament.timer.running ? " · en lecture" : " · chrono arrêté"}
         </p>
       </div>
 

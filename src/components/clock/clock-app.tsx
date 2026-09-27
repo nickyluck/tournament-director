@@ -1,5 +1,6 @@
 "use client";
 
+import { isBreak } from "@/lib/tournament/blinds";
 import { formatChips, formatClock } from "@/lib/tournament/helpers";
 import { useLiveRemaining } from "@/hooks/use-live-remaining";
 import { useTournamentStream } from "@/hooks/use-tournament";
@@ -61,34 +62,46 @@ export function ClockApp() {
       <section className="relative z-10 flex flex-1 flex-col items-center justify-center text-center">
         <p className="text-lg uppercase tracking-[0.35em] text-sky-300/90 sm:text-xl">
           {tournament.status === "setup"
-            ? "En préparation"
+            ? tournament.tables.some((t) => t.open)
+              ? "Placement — rejoignez vos tables"
+              : "En préparation"
             : tournament.status === "finished"
               ? "Tournoi terminé"
-              : `Niveau ${tournament.timer.levelIndex + 1}`}
+              : isBreak(level)
+                ? "Pause"
+                : `Niveau ${tournament.timer.levelIndex + 1}`}
         </p>
         <p className="mt-4 font-mono text-[22vw] font-semibold leading-none tracking-tight tabular-nums sm:text-[10rem]">
           {formatClock(remainingMs)}
         </p>
         {level ? (
-          <p className="mt-6 text-3xl font-medium tabular-nums sm:text-5xl">
-            {formatChips(level.smallBlind)} / {formatChips(level.bigBlind)}
-            {level.ante > 0 ? (
-              <span className="text-zinc-400"> · ante {formatChips(level.ante)}</span>
-            ) : null}
-          </p>
+          isBreak(level) ? (
+            <p className="mt-6 max-w-3xl text-2xl font-medium text-amber-200 sm:text-4xl">
+              {level.message || "Pause"}
+            </p>
+          ) : (
+            <p className="mt-6 text-3xl font-medium tabular-nums sm:text-5xl">
+              {formatChips(level.smallBlind)} / {formatChips(level.bigBlind)}
+              {level.ante > 0 ? (
+                <span className="text-zinc-400"> · ante {formatChips(level.ante)}</span>
+              ) : null}
+            </p>
+          )
         ) : (
           <p className="mt-6 text-xl text-zinc-400">Aucune blinde configurée</p>
         )}
-        {!tournament.timer.running && tournament.status === "running" ? (
-          <p className="mt-4 text-amber-300">Pause</p>
+        {!tournament.timer.running && tournament.status === "running" && !isBreak(level) ? (
+          <p className="mt-4 text-amber-300">Chrono arrêté</p>
         ) : null}
       </section>
 
       <footer className="relative z-10 flex flex-wrap items-center justify-between gap-3 text-sm text-zinc-400 sm:text-base">
         <p>
           {next
-            ? `Suivant : ${formatChips(next.smallBlind)} / ${formatChips(next.bigBlind)}${next.ante ? ` ante ${formatChips(next.ante)}` : ""}`
-            : "Dernier niveau"}
+            ? isBreak(next)
+              ? `Suivant : Pause${next.message ? ` — ${next.message}` : ""}`
+              : `Suivant : ${formatChips(next.smallBlind)} / ${formatChips(next.bigBlind)}${next.ante ? ` ante ${formatChips(next.ante)}` : ""}`
+            : "Dernière étape"}
         </p>
         <p>{tournament.timer.running ? "Chrono en cours" : "Chrono arrêté"}</p>
       </footer>

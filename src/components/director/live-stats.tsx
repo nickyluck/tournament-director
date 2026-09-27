@@ -1,5 +1,6 @@
 "use client";
 
+import { isBreak } from "@/lib/tournament/blinds";
 import { formatChips, formatClock } from "@/lib/tournament/helpers";
 import type { TournamentPublic } from "@/lib/tournament/types";
 
@@ -28,10 +29,18 @@ export function LiveStats({
         }
       />
       <Stat
-        label={level ? `Niveau ${tournament.timer.levelIndex + 1}` : "Blindes"}
+        label={
+          level
+            ? isBreak(level)
+              ? "Pause"
+              : `Niveau ${tournament.timer.levelIndex + 1}`
+            : "Blindes"
+        }
         value={
           level
-            ? `${formatChips(level.smallBlind)} / ${formatChips(level.bigBlind)}${level.ante ? ` · A${formatChips(level.ante)}` : ""}`
+            ? isBreak(level)
+              ? level.message || "Pause"
+              : `${formatChips(level.smallBlind)} / ${formatChips(level.bigBlind)}${level.ante ? ` · A${formatChips(level.ante)}` : ""}`
             : "—"
         }
         hint={formatClock(remainingMs)}

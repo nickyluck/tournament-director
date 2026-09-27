@@ -11,7 +11,9 @@ export async function PATCH(request: Request) {
       name?: string;
       startingStack?: number;
       seatsPerTable?: number;
+      finalTableSeats?: number;
       configuredTableCount?: number;
+      breakOrder?: string[];
       blinds?: BlindLevel[];
       reset?: boolean;
     };
@@ -24,7 +26,9 @@ export async function PATCH(request: Request) {
       name: body.name,
       startingStack: body.startingStack,
       seatsPerTable: body.seatsPerTable,
+      finalTableSeats: body.finalTableSeats,
       configuredTableCount: body.configuredTableCount,
+      breakOrder: body.breakOrder,
       blinds: body.blinds,
     });
     return jsonOk(tournament);

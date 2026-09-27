@@ -42,4 +42,5 @@ next-env.d.ts
 
 # tournament runtime data
 /data/tournament.json
+/data/library.json
 /data/*.tmp

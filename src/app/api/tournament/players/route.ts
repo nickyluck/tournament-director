@@ -1,14 +1,26 @@
 import { jsonError, jsonOk } from "@/lib/api";
-import { addPlayer, removePlayer } from "@/lib/tournament/store";
+import { addPlayer, enrollPlayers, removePlayer } from "@/lib/tournament/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as { name?: string };
+    const body = (await request.json()) as {
+      name?: string;
+      names?: string[];
+      saveToRoster?: boolean;
+    };
+
+    if (Array.isArray(body.names)) {
+      return jsonOk(
+        await enrollPlayers(body.names, { saveToRoster: body.saveToRoster }),
+      );
+    }
     if (!body.name) return jsonError("Nom requis");
-    return jsonOk(await addPlayer(body.name));
+    return jsonOk(
+      await addPlayer(body.name, { saveToRoster: body.saveToRoster }),
+    );
   } catch (err) {
     return jsonError(err instanceof Error ? err.message : "Erreur d'inscription");
   }

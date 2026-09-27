@@ -8,13 +8,16 @@ export function generatePin(): string {
   return String(Math.floor(1000 + Math.random() * 9000));
 }
 
-/** Structure type MTT 20–30 joueurs, niveaux 20 min. */
+/** Structure type MTT 20–30 joueurs, niveaux 20 min, avec une pause jetons. */
 export function sampleBlindStructure(): BlindLevel[] {
   const levels: Array<[number, number, number, number]> = [
     [20, 100, 200, 0],
     [20, 200, 400, 0],
     [20, 300, 600, 0],
     [20, 400, 800, 100],
+  ];
+
+  const afterBreak: Array<[number, number, number, number]> = [
     [20, 500, 1000, 100],
     [20, 600, 1200, 200],
     [20, 800, 1600, 200],
@@ -29,13 +32,34 @@ export function sampleBlindStructure(): BlindLevel[] {
     [20, 10000, 20000, 4000],
   ];
 
-  return levels.map(([durationMinutes, smallBlind, bigBlind, ante]) => ({
+  const toLevel = ([durationMinutes, smallBlind, bigBlind, ante]: [
+    number,
+    number,
+    number,
+    number,
+  ]): BlindLevel => ({
     id: createId("blind"),
+    kind: "level",
     durationMinutes,
     smallBlind,
     bigBlind,
     ante,
-  }));
+    message: null,
+  });
+
+  return [
+    ...levels.map(toLevel),
+    {
+      id: createId("blind"),
+      kind: "break",
+      durationMinutes: 10,
+      smallBlind: 0,
+      bigBlind: 0,
+      ante: 0,
+      message: "Changement de jetons : retirez les noirs",
+    },
+    ...afterBreak.map(toLevel),
+  ];
 }
 
 export function formatChips(n: number): string {

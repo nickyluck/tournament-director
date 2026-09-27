@@ -10,9 +10,31 @@ function shuffle<T>(items: T[]): T[] {
   return arr;
 }
 
-export function targetTableCount(remaining: number, seatsPerTable: number): number {
+export function targetTableCount(
+  remaining: number,
+  seatsPerTable: number,
+  finalTableSeats = seatsPerTable,
+): number {
   if (remaining <= 0) return 0;
+  if (remaining <= finalTableSeats) return 1;
   return Math.ceil(remaining / seatsPerTable);
+}
+
+export function syncBreakOrder(breakOrder: string[], tables: Table[]): string[] {
+  const openIds = new Set(tables.filter((t) => t.open).map((t) => t.id));
+  const kept = breakOrder.filter((id) => openIds.has(id));
+  const missing = tables
+    .filter((t) => t.open && !kept.includes(t.id))
+    .sort((a, b) => b.number - a.number)
+    .map((t) => t.id);
+  return [...kept, ...missing];
+}
+
+export function defaultBreakOrder(tables: Table[]): string[] {
+  return tables
+    .filter((t) => t.open)
+    .sort((a, b) => b.number - a.number)
+    .map((t) => t.id);
 }
 
 function openTables(tables: Table[]): Table[] {
@@ -68,29 +90,62 @@ function assignSeat(
   }
 }
 
+function pickTableToBreak(
+  opens: Table[],
+  players: Player[],
+  breakOrder: string[],
+): Table {
+  for (const id of breakOrder) {
+    const match = opens.find((t) => t.id === id);
+    if (match) return match;
+  }
+  return [...opens].sort((a, b) => {
+    const ca = playersAtTable(players, a.id).length;
+    const cb = playersAtTable(players, b.id).length;
+    if (ca !== cb) return ca - cb;
+    return b.number - a.number;
+  })[0];
+}
+
+export type RebalanceOptions = {
+  finalTableSeats?: number;
+  breakOrder?: string[];
+};
+
+export type RebalanceResult = {
+  players: Player[];
+  tables: Table[];
+  moves: SeatingMove[];
+  breakOrder: string[];
+};
+
 /** Création des tables et seating initial équilibré aléatoire. */
 export function seatInitial(
   players: Player[],
   configuredTableCount: number,
   seatsPerTable: number,
-): { tables: Table[]; players: Player[]; moves: SeatingMove[] } {
+  finalTableSeats = seatsPerTable,
+): { tables: Table[]; players: Player[]; moves: SeatingMove[]; breakOrder: string[] } {
   const actives = shuffle(activePlayers(players));
-  const minNeeded = targetTableCount(actives.length, seatsPerTable);
+  const minNeeded = targetTableCount(actives.length, seatsPerTable, finalTableSeats);
   const capacityOk = configuredTableCount * seatsPerTable >= actives.length;
   const count = Math.max(capacityOk ? configuredTableCount : minNeeded, minNeeded, 1);
 
   const tables: Table[] = Array.from({ length: count }, (_, i) => ({
     id: createId("table"),
     number: i + 1,
-    seats: seatsPerTable,
+    seats: count === 1 ? Math.max(seatsPerTable, finalTableSeats, actives.length) : seatsPerTable,
     open: true,
   }));
+
+  if (tables.length === 1) {
+    tables[0].seats = Math.max(finalTableSeats, actives.length, seatsPerTable);
+  }
 
   const nextPlayers = players.map((p) => ({ ...p, tableId: null, seat: null }));
   const moves: SeatingMove[] = [];
   const open = openTables(tables);
 
-  // Distribute round-robin then assign random free seats (écart ≤ 1).
   actives.forEach((original, index) => {
     const table = open[index % open.length];
     const seats = freeSeats(table, nextPlayers);
@@ -100,42 +155,61 @@ export function seatInitial(
     assignSeat(nextPlayers, original.id, table, seat, null, "initial", moves);
   });
 
-  return { tables, players: nextPlayers, moves };
+  return {
+    tables,
+    players: nextPlayers,
+    moves,
+    breakOrder: defaultBreakOrder(tables),
+  };
 }
 
 /**
- * Rééquilibrage + casse de tables si trop de tables ouvertes.
+ * Rééquilibrage + casse de tables selon breakOrder et taille de table finale.
  * Écart max entre tables ouvertes ≤ 1.
  */
 export function rebalanceAndBreak(
   players: Player[],
   tables: Table[],
   seatsPerTable: number,
-): { players: Player[]; tables: Table[]; moves: SeatingMove[] } {
+  options: RebalanceOptions = {},
+): RebalanceResult {
+  const finalTableSeats = options.finalTableSeats ?? seatsPerTable;
+  let breakOrder = [...(options.breakOrder ?? [])];
   const nextPlayers = players.map((p) => ({ ...p }));
-  const nextTables = tables.map((t) => ({ ...t, seats: seatsPerTable }));
+  const nextTables = tables.map((t) => ({ ...t }));
   const moves: SeatingMove[] = [];
   const remaining = activePlayers(nextPlayers).length;
-  const target = targetTableCount(remaining, seatsPerTable);
+  const target = targetTableCount(remaining, seatsPerTable, finalTableSeats);
+
+  // Apply seat capacities: multi-table uses seatsPerTable; final uses finalTableSeats.
+  for (const t of nextTables) {
+    if (t.open) {
+      t.seats = target === 1 ? Math.max(finalTableSeats, remaining) : seatsPerTable;
+    }
+  }
 
   while (openTables(nextTables).length > target) {
     const opens = openTables(nextTables);
     if (opens.length === 0) break;
 
-    const smallest = [...opens].sort((a, b) => {
-      const ca = playersAtTable(nextPlayers, a.id).length;
-      const cb = playersAtTable(nextPlayers, b.id).length;
-      if (ca !== cb) return ca - cb;
-      return b.number - a.number;
-    })[0];
-
-    const displaced = playersAtTable(nextPlayers, smallest.id);
+    const victim = pickTableToBreak(opens, nextPlayers, breakOrder);
+    const displaced = playersAtTable(nextPlayers, victim.id);
     for (const p of displaced) {
       p.tableId = null;
       p.seat = null;
     }
-    const table = nextTables.find((t) => t.id === smallest.id)!;
+    const table = nextTables.find((t) => t.id === victim.id)!;
     table.open = false;
+    breakOrder = breakOrder.filter((id) => id !== victim.id);
+
+    // Refresh capacities on remaining opens before seating displaced.
+    const stillOpen = openTables(nextTables);
+    for (const t of stillOpen) {
+      t.seats =
+        stillOpen.length === 1
+          ? Math.max(finalTableSeats, remaining)
+          : seatsPerTable;
+    }
 
     for (const p of shuffle(displaced)) {
       const destinations = openTables(nextTables)
@@ -154,7 +228,7 @@ export function rebalanceAndBreak(
         p.id,
         dest.table,
         dest.free[0],
-        smallest.number,
+        victim.number,
         "break",
         moves,
       );
@@ -168,12 +242,15 @@ export function rebalanceAndBreak(
       .filter((t) => !t.open)
       .sort((a, b) => a.number - b.number);
     for (let i = 0; i < need; i += 1) {
-      if (closed[i]) closed[i].open = true;
-      else {
+      if (closed[i]) {
+        closed[i].open = true;
+        closed[i].seats =
+          target === 1 ? Math.max(finalTableSeats, remaining) : seatsPerTable;
+      } else {
         nextTables.push({
           id: createId("table"),
           number: nextTables.length + 1,
-          seats: seatsPerTable,
+          seats: target === 1 ? Math.max(finalTableSeats, remaining) : seatsPerTable,
           open: true,
         });
       }
@@ -224,5 +301,17 @@ export function rebalanceAndBreak(
     }
   }
 
-  return { players: nextPlayers, tables: nextTables, moves };
+  const finalOpens = openTables(nextTables);
+  if (finalOpens.length === 1) {
+    finalOpens[0].seats = Math.max(finalTableSeats, remaining);
+  }
+
+  breakOrder = syncBreakOrder(breakOrder, nextTables);
+
+  return {
+    players: nextPlayers,
+    tables: nextTables,
+    moves,
+    breakOrder,
+  };
 }

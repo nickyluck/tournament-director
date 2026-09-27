@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { EliminateDialog } from "@/components/eliminate-dialog";
+import { isBreak } from "@/lib/tournament/blinds";
 import { formatChips, formatClock } from "@/lib/tournament/helpers";
 import { useLiveRemaining } from "@/hooks/use-live-remaining";
 import { apiMutate, useTournamentStream } from "@/hooks/use-tournament";
@@ -119,15 +120,23 @@ export function MobileApp() {
         <div className="mt-3 flex flex-wrap gap-2">
           <Badge variant="secondary">{tournament.remainingPlayers} restants</Badge>
           <Badge variant="outline">{tournament.openTables} tables</Badge>
+          <a className="text-xs underline underline-offset-4 self-center" href="/standings">
+            Classement
+          </a>
         </div>
       </header>
 
       {tournament.status === "setup" ? (
         <Alert>
-          <AlertTitle>Tournoi pas encore lancé</AlertTitle>
+          <AlertTitle>
+            {tournament.tables.some((t) => t.open)
+              ? "Placement en cours"
+              : "Tournoi pas encore lancé"}
+          </AlertTitle>
           <AlertDescription>
-            Les éliminations et le chrono seront disponibles après le départ sur
-            la console directeur.
+            {tournament.tables.some((t) => t.open)
+              ? "Les joueurs peuvent rejoindre leurs tables. Chrono et éliminations après le départ."
+              : "Les éliminations et le chrono seront disponibles après le placement puis le départ sur la console directeur."}
           </AlertDescription>
         </Alert>
       ) : null}
@@ -169,9 +178,11 @@ export function MobileApp() {
           </p>
           <p className="mt-1 text-sm text-muted-foreground">
             {level
-              ? `Niveau ${tournament.timer.levelIndex + 1} · ${formatChips(level.smallBlind)}/${formatChips(level.bigBlind)}${level.ante ? ` · ante ${formatChips(level.ante)}` : ""}`
+              ? isBreak(level)
+                ? `Pause${level.message ? ` · ${level.message}` : ""}`
+                : `Niveau ${tournament.timer.levelIndex + 1} · ${formatChips(level.smallBlind)}/${formatChips(level.bigBlind)}${level.ante ? ` · ante ${formatChips(level.ante)}` : ""}`
               : "Aucun niveau"}
-            {tournament.timer.running ? " · en lecture" : " · en pause"}
+            {tournament.timer.running ? " · en lecture" : " · chrono arrêté"}
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             {tournament.timer.running ? (
